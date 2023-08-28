@@ -95,10 +95,7 @@ function maxflow_hlpp(
     # Allocate space for the flow we will calculate
     F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
 
-    hlpp_dt = @elapsed begin
-        S, FlowMat, height, flowvalue = HLPP(Cundir, F, flowtol)
-    end
-    @show hlpp_dt
+    S, FlowMat, height, flowvalue = HLPP(Cundir, F, flowtol)
     inS = zeros(Bool, n)
     inS[S] .= true
     cutvalue = zero(Tf) 
@@ -428,7 +425,6 @@ function HLPP(
         end
         println("")
     end
-
 
     global_relabel()
 

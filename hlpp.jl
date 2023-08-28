@@ -27,11 +27,12 @@ flowtol = tolerance parameter for whether there is still capacity available on
 
 Returns F, which is of type stFlow.
 """
-function maxflow_hlpp(
+function maxflow(
     B::SparseMatrixCSC{Tf, Ti},
     s::Ti,
     t::Ti,
     flowtol=nothing,
+    details=false, # whether to return the capacity and flow matrix
 ) where {Ti <: Integer, Tf}
     # Set the default value of flowtol
     if flowtol === nothing
@@ -95,10 +96,7 @@ function maxflow_hlpp(
     ## Allocate space for the flow we will calculate
     #F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
 
-    hlpp_dt = @elapsed begin
-        S, FlowMat, height, flowvalue = HLPP(C, flowtol)
-    end
-    @show hlpp_dt
+    S, FlowMat, height, flowvalue = HLPP(C, flowtol, details)
     inS = zeros(Bool, n)
     inS[S] .= true
     cutvalue = zero(Tf) 
@@ -121,11 +119,12 @@ are given by vectors svec and tvec.
 
 This code sets s as the first node, and t as the last node.
 """
-function maxflow_hlpp(
+function maxflow(
     A::SparseMatrixCSC{Tf, Ti},
     svec::Vector{Tf},
     tvec::Vector{Tf},
     flowtol=nothing,
+    details=false,
 ) where {Ti <: Integer, Tf}
 
     n = size(A, 1)
@@ -135,7 +134,7 @@ function maxflow_hlpp(
          spzeros(Tf, n, 1) A sparse(tvec);
          spzeros(Tf, 1,1) spzeros(Tf, 1, n) spzeros(Tf, 1,1)]
 
-    return maxflow_hlpp(C, 1, n+2, flowtol)
+    return maxflow(C, 1, n+2, flowtol, storeflow)
 end
 
 
@@ -224,57 +223,56 @@ function cut_edges_nonterminal(F::stFlow)
 end
 
 
-mutable struct Edge{Tf, Ti}
-    to::Ti
-    cap::Tf
-    flow::Tf
-    rev::Ti # pointer to reverse edge
-end
-
 """
 Main function for Highest Label Preflow Push Method
 """
 function HLPP(
     C::SparseMatrixCSC{Tf, Ti},
     flowtol::Tf,
+    details::Bool=false,
 ) where {Ti <: Integer, Tf}
     n = size(C, 1) # number of vertices in the graph
     m = nnz(C)
 
     # height(level) of nodes
     height = zeros(Ti, n)
+    cursor = zeros(Ti, n)
+    m_starts = zeros(Ti, n + 1)
+    d = zeros(Ti, n)
+    to = zeros(Ti, 2*m)
+    rev = zeros(Ti, 2*m)
+    rescap = zeros(Tf, 2*m) # capacity in the residual graph
+
 
     function ConstructAdjlist()
-        cursor = zeros(Ti, n)
-        m_starts = zeros(Ti, n + 1)
-        d = zeros(Ti, n)
         I, J, V = findnz(C)
         for k = eachindex(I)
             u = I[k]; v = J[k];
-            if u != v # ignore self-loops
+            if u != v # remove self-loops
                 d[u] += 1 
                 d[v] += 1 
-            end 
+            end
         end
         for i = 1:n
             cursor[i] = (i == 1) ? 1 : cursor[i - 1] + d[i - 1]
             m_starts[i] = cursor[i]
         end
         m_starts[n + 1] = cursor[n] + d[n]
-        edges = Vector{Edge{Tf, Ti}}(undef, m_starts[n+1]-1)
         for k = eachindex(I)
             u = I[k]; v = J[k]; c = V[k]
-            if u != v
-                edges[cursor[u]] = Edge(v, c, zero(Tf), cursor[v])
-                edges[cursor[v]] = Edge(u, zero(Tf), zero(Tf), cursor[u])
+            if u != v # remove self-loops
+                curu = cursor[u]; curv = cursor[v] 
+                to[curu] = v; rev[curu] = curv; rescap[curu] = c
+                to[curv] = u; rev[curv] = curu; rescap[curv] = zero(Tf)
                 cursor[u] += 1
                 cursor[v] += 1
-            end 
+            end
         end
-        return m_starts, edges
     end
     # allocate space for reverse edges, assign the capacities of them as 0
-    m_starts, edges = ConstructAdjlist()
+    adjtime = @elapsed begin
+        ConstructAdjlist()
+    end
     # active nodes
     # for each level, use a cyclic linked list to store active nodes
     excess = zeros(Tf, n)
@@ -365,9 +363,9 @@ function HLPP(
             u = queue[head]
             head += 1
             for i in m_starts[u]:m_starts[u + 1] - 1 
-                v = edges[i].to
-                revid = edges[i].rev
-                if edges[revid].flow < edges[revid].cap && height[v] > height[u] + 1 
+                v = to[i]
+                rev_edge = rev[i] 
+                if rescap[rev_edge] > 0 && height[v] > height[u] + 1 
                     update_height(v, height[u] + 1)
                     tail += 1
                     queue[tail] = v
@@ -379,9 +377,8 @@ function HLPP(
     function push(u::Ti, v::Ti, eid::Ti, f::Tf)
         excess_remove(u, f)
         excess_add(v, f)
-        edges[eid].flow += f
-        revid = edges[eid].rev
-        edges[revid].flow -= f 
+        rescap[eid] -= f
+        rescap[rev[eid]] += f
     end
 
     # pointers for current arc heuristic
@@ -392,11 +389,11 @@ function HLPP(
         pos = cur_arc[u] 
         m_end = m_starts[u + 1] - 1
         while cur_arc[u] <= m_end 
-            e = edges[cur_arc[u]]
-            v = e.to 
-            if e.flow < e.cap 
+            e = cur_arc[u]
+            v = to[e] 
+            if rescap[e] > 0 
                 if height[u] == height[v] + 1
-                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
+                    push(u, v, cur_arc[u], min(excess[u], rescap[e]))
                     if excess[u] <= 0
                         return
                     end
@@ -410,11 +407,11 @@ function HLPP(
         end
         cur_arc[u] = m_starts[u] 
         while cur_arc[u] < pos
-            e = edges[cur_arc[u]]
-            v = e.to 
-            if e.flow < e.cap 
+            e = cur_arc[u]
+            v = to[e] 
+            if rescap[e] > 0 
                 if height[u] == height[v] + 1
-                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
+                    push(u, v, cur_arc[u], min(excess[u], rescap[e]))
                     if excess[u] <= 0
                         return
                     end
@@ -451,12 +448,15 @@ function HLPP(
             print("$(excess[i]) ")
         end
         println("")
+        for i = 1:n
+            for j = m_starts[i]:m_starts[i+1]-1
+                println("$i $(to[j]) $(rescap[j])")
+            end
+        end
     end
-
 
     global_relabel()
 
-    #print_key_variables()
     if height[1] < infinite_height
         excess_add(1, infinite_cap)
         excess_remove(n, infinite_cap)
@@ -471,6 +471,7 @@ function HLPP(
                     continue
                 end
                 discharge(v)
+                #print_key_variables()
                 if discharge_count >= 4 * n
                     global_relabel()
                 end
@@ -480,22 +481,27 @@ function HLPP(
     end
     S = Vector{Ti}()
     global_relabel()
+    #print_key_variables()
     for i = 1:n
         if height[i] == infinite_height
             push!(S, i)
         end
     end
-    I_F = Vector{Ti}()
-    J_F = Vector{Ti}()
-    V_F = Vector{Tf}()
-    for i = 1:n
-        for j = m_starts[i]:m_starts[i+1]-1
-            push!(I_F, i)
-            push!(J_F, edges[j].to)
-            push!(V_F, edges[j].flow)
+    if details
+        I_F = Vector{Ti}()
+        J_F = Vector{Ti}()
+        V_F = Vector{Tf}()
+        for i = 1:n
+            for j = m_starts[i]:m_starts[i+1]-1
+                push!(I_F, i)
+                push!(J_F, to[j])
+                push!(V_F, C[i, to[j]] - rescap[j])
+            end
         end
+        F = sparse(I_F, J_F, V_F, n, n)
+    else
+        F = spzeros(Tf, n, n)
     end
-    F = sparse(I_F, J_F, V_F, n, n)
     return S, F, height, excess[n] + infinite_cap
 end
 

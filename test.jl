@@ -35,17 +35,21 @@ end
 
 include("hlpp.jl")
 include("hlpp_csc.jl")
-for i = 15:15 
+for i = 1:36
     B, s, t, stdans = read_flow_network("680/data$i", ".in", ".ans")
+    B = Float64.(B)
     hlpp_dt = @elapsed begin 
-        res = hlpp.maxflow_hlpp(B, s, t)
-        @show res.cutvalue, stdans
+        res = hlpp.maxflow(B, s, t, 0.0)
         @assert res.cutvalue == stdans
     end
+    @show i, hlpp_dt
+end
+for i = 1:36
+    B, s, t, stdans = read_flow_network("680/data$i", ".in", ".ans")
+    B = Float64.(B)
     hlpp_csc_dt = @elapsed begin
-        res = hlpp_csc.maxflow_hlpp(B, s, t)
-        @show res.cutvalue, stdans
+        res = hlpp_csc.maxflow_hlpp(B, s, t, 0.0)
         @assert res.cutvalue == stdans
     end
-    @show i, hlpp_dt, hlpp_csc_dt
+    @show i, hlpp_csc_dt
 end
