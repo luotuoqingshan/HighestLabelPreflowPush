@@ -27,7 +27,7 @@ flowtol = tolerance parameter for whether there is still capacity available on
 
 Returns F, which is of type stFlow.
 """
-function maxflow_hlpp(
+function maxflow(
     B::SparseMatrixCSC{Tf, Ti},
     s::Ti,
     t::Ti,
@@ -316,7 +316,7 @@ function HLPP(
         height[v] = h
         if h != infinite_height 
             gap_insert(v, h)
-            if excess[v] > 0 
+            if excess[v] > flowtol 
                 excess_insert(v, h)
             end
         end
@@ -344,7 +344,7 @@ function HLPP(
             u = queue[head]
             head += 1
             for v in neighbors[u] 
-                if F[v, u] < C[v, u] && height[v] > height[u] + 1 
+                if F[v, u] < C[v, u] - flowtol && height[v] > height[u] + 1 
                     update_height(v, height[u] + 1)
                     tail += 1
                     queue[tail] = v
@@ -368,7 +368,7 @@ function HLPP(
         pos = cur_arc[u] 
         while cur_arc[u] <= length(neighbors[u]) 
             v = neighbors[u][cur_arc[u]]
-            if F[u, v] < C[u, v] 
+            if C[u, v] - F[u, v] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, min(excess[u], C[u, v] - F[u, v]))
                     if excess[u] <= 0
@@ -385,7 +385,7 @@ function HLPP(
         cur_arc[u] = one(Ti) 
         while cur_arc[u] < pos
             v = neighbors[u][cur_arc[u]]
-            if F[u, v] < C[u, v] 
+            if C[u, v] - F[u, v] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, min(excess[u], C[u, v] - F[u, v]))
                     if excess[u] <= 0

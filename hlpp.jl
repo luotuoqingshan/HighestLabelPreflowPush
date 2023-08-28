@@ -25,6 +25,8 @@ a source node s, and a sink node t, return the maximum s-t flow.
 flowtol = tolerance parameter for whether there is still capacity available on
             an edge. Helps avoid rounding errors. Default is 1e-6.
 
+details = whether to return the capacity and flow matrix. Default is false.
+
 Returns F, which is of type stFlow.
 """
 function maxflow(
@@ -85,16 +87,11 @@ function maxflow(
     Map = [s; NonTerminal; t]
 
     # Directly set up the flow matrix
+    # Notice that it doesn't matter that edges connected to terminal nodes 
+    # are directed or undirected, here we set them as directed.
     C = [spzeros(Tf, 1, 1) B[s, NonTerminal]' spzeros(Tf, 1, 1);
          spzeros(Tf, n - 2, 1) A B[NonTerminal, t];
          spzeros(Tf, 1, 1) spzeros(Tf, 1, n - 2) spzeros(Tf, 1, 1)]
-
-    #I, J, V = findnz(C)
-    ## allocate space for reverse edges, assign the capacities of them as 0
-    #Cundir = sparse([I; J], [J; I], [V; zeros(Tf, length(V))], n, n)
-
-    ## Allocate space for the flow we will calculate
-    #F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
 
     S, FlowMat, height, flowvalue = HLPP(C, flowtol, details)
     inS = zeros(Bool, n)
@@ -236,16 +233,29 @@ function HLPP(
 
     # height(level) of nodes
     height = zeros(Ti, n)
+
+    # auxiliary array for creating adjacency lists
     cursor = zeros(Ti, n)
+
+    # edges with id from m_starts[i] to m_starts[i+1]-1 are from node i
     m_starts = zeros(Ti, n + 1)
+
+    # number of edges from node i (self-loops excluded)
     d = zeros(Ti, n)
+
+    # the node that edge i points to
     to = zeros(Ti, 2*m)
+
+    # rev[i] stores the id of the reverse edge of edge i
     rev = zeros(Ti, 2*m)
+
+    # rescap[i] = capacity of edge i - flow on edge i
     rescap = zeros(Tf, 2*m) # capacity in the residual graph
 
 
     function ConstructAdjlist()
         I, J, V = findnz(C)
+        # compute d
         for k = eachindex(I)
             u = I[k]; v = J[k];
             if u != v # remove self-loops
@@ -253,6 +263,7 @@ function HLPP(
                 d[v] += 1 
             end
         end
+        # cursor is the prefix sum of d 
         for i = 1:n
             cursor[i] = (i == 1) ? 1 : cursor[i - 1] + d[i - 1]
             m_starts[i] = cursor[i]
@@ -261,6 +272,7 @@ function HLPP(
         for k = eachindex(I)
             u = I[k]; v = J[k]; c = V[k]
             if u != v # remove self-loops
+                # for each directed edge, create two edges, with capacity c and 0
                 curu = cursor[u]; curv = cursor[v] 
                 to[curu] = v; rev[curu] = curv; rescap[curu] = c
                 to[curv] = u; rev[curv] = curu; rescap[curv] = zero(Tf)
@@ -269,10 +281,8 @@ function HLPP(
             end
         end
     end
-    # allocate space for reverse edges, assign the capacities of them as 0
-    adjtime = @elapsed begin
-        ConstructAdjlist()
-    end
+    ConstructAdjlist()
+
     # active nodes
     # for each level, use a cyclic linked list to store active nodes
     excess = zeros(Tf, n)
@@ -291,6 +301,7 @@ function HLPP(
     infinite_height = Ti(round(typemax(Ti) / 2))
 
     function excess_insert(v::Ti, h::Ti) 
+        # insert v into the cyclic linked list for level h
         excess_next[v] = excess_next[n + 1 + h]
         excess_next[n + 1 + h] = v
         if h > excess_height
@@ -309,11 +320,18 @@ function HLPP(
         excess[v] -= f
     end
 
+    # gap heuristic
+    # once one gap is observed, then those nodes with label 
+    # larger than this level is disconnected from sink, so
+    # it is useless to push flow from them, we can relabel 
+    # them to infinite height or n + 1
+    # we use cyclic double linked lists to implement gap heuristics
     gap_prev = zeros(Ti, n * 2 + 1)
     gap_next = zeros(Ti, n * 2 + 1)
     gap_highest = zero(Ti)
 
     function gap_insert(v::Ti, h::Ti)
+        # insert v into the cyclic linked list for level h
         gap_prev[v] = n + 1 + h 
         gap_next[v] = gap_next[n + 1 + h]
         gap_prev[gap_next[v]] = v
@@ -325,6 +343,7 @@ function HLPP(
 
 
     function gap_erase(v::Ti)
+        # erase v from the cyclic linked list for level h
         gap_next[gap_prev[v]] = gap_next[v]
         gap_prev[gap_next[v]] = gap_prev[v]
     end
@@ -337,7 +356,7 @@ function HLPP(
         height[v] = h
         if h != infinite_height 
             gap_insert(v, h)
-            if excess[v] > 0 
+            if excess[v] > flowtol 
                 excess_insert(v, h)
             end
         end
@@ -359,13 +378,15 @@ function HLPP(
         head = 1
         tail = 1
         queue[tail] = n
+        # perform a reverse bfs from the sink node
+        # using edges in the residual graph 
         while head <= tail
             u = queue[head]
             head += 1
             for i in m_starts[u]:m_starts[u + 1] - 1 
                 v = to[i]
                 rev_edge = rev[i] 
-                if rescap[rev_edge] > 0 && height[v] > height[u] + 1 
+                if rescap[rev_edge] > flowtol && height[v] > height[u] + 1 
                     update_height(v, height[u] + 1)
                     tail += 1
                     queue[tail] = v
@@ -391,7 +412,7 @@ function HLPP(
         while cur_arc[u] <= m_end 
             e = cur_arc[u]
             v = to[e] 
-            if rescap[e] > 0 
+            if rescap[e] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, cur_arc[u], min(excess[u], rescap[e]))
                     if excess[u] <= 0
@@ -409,7 +430,7 @@ function HLPP(
         while cur_arc[u] < pos
             e = cur_arc[u]
             v = to[e] 
-            if rescap[e] > 0 
+            if rescap[e] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, cur_arc[u], min(excess[u], rescap[e]))
                     if excess[u] <= 0
@@ -427,6 +448,8 @@ function HLPP(
         if gap_next[gap_next[n + 1 + height[u]]] <= n
             update_height(u, h == n ? infinite_height : h + 1)
         else
+            # if one gap is observed, then those nodes with label
+            # larger than this gap will be relabeled
             oldh = height[u]
             for h = height[u]:gap_highest
                 while gap_next[n + 1 + h] <= n
@@ -457,11 +480,13 @@ function HLPP(
 
     global_relabel()
 
+    # if source can reach sink
     if height[1] < infinite_height
         excess_add(1, infinite_cap)
         excess_remove(n, infinite_cap)
         while excess_height > 0 
             while true
+                # pick the active node with the highest height
                 v = excess_next[n + 1 + excess_height]
                 if v > n
                     break
@@ -472,6 +497,8 @@ function HLPP(
                 end
                 discharge(v)
                 #print_key_variables()
+
+                # perform the global relabeling heuristic every 4n discharges
                 if discharge_count >= 4 * n
                     global_relabel()
                 end

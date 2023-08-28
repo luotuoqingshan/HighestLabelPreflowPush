@@ -1,2 +1,4 @@
 [deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+MatrixNetworks = "4f449596-a032-5618-b826-5a251cb6dc11"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
