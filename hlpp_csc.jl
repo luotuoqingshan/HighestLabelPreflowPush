@@ -1,4 +1,4 @@
-module hlpp
+module hlpp_csc
 using SparseArrays
 
 # Push Relabel solver for maximum s-t flow, minimum s-t cut problems
@@ -88,15 +88,15 @@ function maxflow_hlpp(
          spzeros(Tf, n - 2, 1) A B[NonTerminal, t];
          spzeros(Tf, 1, 1) spzeros(Tf, 1, n - 2) spzeros(Tf, 1, 1)]
 
-    #I, J, V = findnz(C)
-    ## allocate space for reverse edges, assign the capacities of them as 0
-    #Cundir = sparse([I; J], [J; I], [V; zeros(Tf, length(V))], n, n)
+    I, J, V = findnz(C)
+    # allocate space for reverse edges, assign the capacities of them as 0
+    Cundir = sparse([I; J], [J; I], [V; zeros(Tf, length(V))], n, n)
 
-    ## Allocate space for the flow we will calculate
-    #F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
+    # Allocate space for the flow we will calculate
+    F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
 
     hlpp_dt = @elapsed begin
-        S, FlowMat, height, flowvalue = HLPP(C, flowtol)
+        S, FlowMat, height, flowvalue = HLPP(Cundir, F, flowtol)
     end
     @show hlpp_dt
     inS = zeros(Bool, n)
@@ -224,11 +224,21 @@ function cut_edges_nonterminal(F::stFlow)
 end
 
 
-mutable struct Edge{Tf, Ti}
-    to::Ti
-    cap::Tf
-    flow::Tf
-    rev::Ti # pointer to reverse edge
+function ConstructAdj(C::SparseMatrixCSC)
+    n = size(C, 1)
+    rp = C.rowval
+    ci = C.colptr
+    Neighbs = Vector{Vector{Int64}}()
+    for i = 1:n
+        # chop up the rp vector and put it in Neighbs
+        push!(Neighbs,rp[ci[i]:ci[i+1]-1])
+    end
+
+    # d is the number of neighbors. This is the unweighted degree,
+    # but note importantly that if the original graph is weighted this is
+    # not the same as the degree vector d we will sometimes use
+    return Neighbs
+
 end
 
 """
@@ -236,6 +246,7 @@ Main function for Highest Label Preflow Push Method
 """
 function HLPP(
     C::SparseMatrixCSC{Tf, Ti},
+    F::SparseMatrixCSC{Tf, Ti},
     flowtol::Tf,
 ) where {Ti <: Integer, Tf}
     n = size(C, 1) # number of vertices in the graph
@@ -244,37 +255,6 @@ function HLPP(
     # height(level) of nodes
     height = zeros(Ti, n)
 
-    function ConstructAdjlist()
-        cursor = zeros(Ti, n)
-        m_starts = zeros(Ti, n + 1)
-        d = zeros(Ti, n)
-        I, J, V = findnz(C)
-        for k = eachindex(I)
-            u = I[k]; v = J[k];
-            if u != v # ignore self-loops
-                d[u] += 1 
-                d[v] += 1 
-            end 
-        end
-        for i = 1:n
-            cursor[i] = (i == 1) ? 1 : cursor[i - 1] + d[i - 1]
-            m_starts[i] = cursor[i]
-        end
-        m_starts[n + 1] = cursor[n] + d[n]
-        edges = Vector{Edge{Tf, Ti}}(undef, m_starts[n+1]-1)
-        for k = eachindex(I)
-            u = I[k]; v = J[k]; c = V[k]
-            if u != v
-                edges[cursor[u]] = Edge(v, c, zero(Tf), cursor[v])
-                edges[cursor[v]] = Edge(u, zero(Tf), zero(Tf), cursor[u])
-                cursor[u] += 1
-                cursor[v] += 1
-            end 
-        end
-        return m_starts, edges
-    end
-    # allocate space for reverse edges, assign the capacities of them as 0
-    m_starts, edges = ConstructAdjlist()
     # active nodes
     # for each level, use a cyclic linked list to store active nodes
     excess = zeros(Tf, n)
@@ -345,6 +325,8 @@ function HLPP(
         end
     end
 
+    neighbors = ConstructAdj(C)
+
     discharge_count::Ti = 0
     function global_relabel()
         discharge_count = 0 
@@ -364,10 +346,8 @@ function HLPP(
         while head <= tail
             u = queue[head]
             head += 1
-            for i in m_starts[u]:m_starts[u + 1] - 1 
-                v = edges[i].to
-                revid = edges[i].rev
-                if edges[revid].flow < edges[revid].cap && height[v] > height[u] + 1 
+            for v in neighbors[u] 
+                if F[v, u] < C[v, u] && height[v] > height[u] + 1 
                     update_height(v, height[u] + 1)
                     tail += 1
                     queue[tail] = v
@@ -376,27 +356,24 @@ function HLPP(
         end
     end
 
-    function push(u::Ti, v::Ti, eid::Ti, f::Tf)
+    function push(u::Ti, v::Ti, f::Tf)
         excess_remove(u, f)
         excess_add(v, f)
-        edges[eid].flow += f
-        revid = edges[eid].rev
-        edges[revid].flow -= f 
+        F[u, v] += f
+        F[v, u] -= f
     end
 
     # pointers for current arc heuristic
-    cur_arc = deepcopy(m_starts) 
+    cur_arc = ones(Ti, n) 
 
     function discharge(u::Ti)
         h = n 
         pos = cur_arc[u] 
-        m_end = m_starts[u + 1] - 1
-        while cur_arc[u] <= m_end 
-            e = edges[cur_arc[u]]
-            v = e.to 
-            if e.flow < e.cap 
+        while cur_arc[u] <= length(neighbors[u]) 
+            v = neighbors[u][cur_arc[u]]
+            if F[u, v] < C[u, v] 
                 if height[u] == height[v] + 1
-                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
+                    push(u, v, min(excess[u], C[u, v] - F[u, v]))
                     if excess[u] <= 0
                         return
                     end
@@ -408,13 +385,12 @@ function HLPP(
             end
             cur_arc[u] += 1
         end
-        cur_arc[u] = m_starts[u] 
+        cur_arc[u] = one(Ti) 
         while cur_arc[u] < pos
-            e = edges[cur_arc[u]]
-            v = e.to 
-            if e.flow < e.cap 
+            v = neighbors[u][cur_arc[u]]
+            if F[u, v] < C[u, v] 
                 if height[u] == height[v] + 1
-                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
+                    push(u, v, min(excess[u], C[u, v] - F[u, v]))
                     if excess[u] <= 0
                         return
                     end
@@ -485,17 +461,6 @@ function HLPP(
             push!(S, i)
         end
     end
-    I_F = Vector{Ti}()
-    J_F = Vector{Ti}()
-    V_F = Vector{Tf}()
-    for i = 1:n
-        for j = m_starts[i]:m_starts[i+1]-1
-            push!(I_F, i)
-            push!(J_F, edges[j].to)
-            push!(V_F, edges[j].flow)
-        end
-    end
-    F = sparse(I_F, J_F, V_F, n, n)
     return S, F, height, excess[n] + infinite_cap
 end
 

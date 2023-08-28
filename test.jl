@@ -33,4 +33,19 @@ function read_flow_network(
     return B, s, t, stdans 
 end
 
-B, s, t, stdans = read_flow_network("680/data1", ".in", ".ans")
+include("hlpp.jl")
+include("hlpp_csc.jl")
+for i = 15:15 
+    B, s, t, stdans = read_flow_network("680/data$i", ".in", ".ans")
+    hlpp_dt = @elapsed begin 
+        res = hlpp.maxflow_hlpp(B, s, t)
+        @show res.cutvalue, stdans
+        @assert res.cutvalue == stdans
+    end
+    hlpp_csc_dt = @elapsed begin
+        res = hlpp_csc.maxflow_hlpp(B, s, t)
+        @show res.cutvalue, stdans
+        @assert res.cutvalue == stdans
+    end
+    @show i, hlpp_dt, hlpp_csc_dt
+end
