@@ -1,4 +1,3 @@
-using MatrixNetworks
 using SparseArrays
 
 # Push Relabel solver for maximum s-t flow, minimum s-t cut problems
@@ -85,8 +84,8 @@ function maxflow_hlpp(
 
     # Directly set up the flow matrix
     C = [spzeros(Tf, 1, 1) B[s, NonTerminal]' spzeros(Tf, 1, 1);
-         spzeros(Tf, n - 2, 1) A spzeros(Tf, n - 2, 1);
-         spzeros(Tf, 1, 1) B[t, NonTerminal]' spzeros(Tf, 1, 1)]
+         spzeros(Tf, n - 2, 1) A B[NonTerminal, t];
+         spzeros(Tf, 1, 1) spzeros(Tf, 1, n - 2) spzeros(Tf, 1, 1)]
 
     #I, J, V = findnz(C)
     ## allocate space for reverse edges, assign the capacities of them as 0
@@ -95,19 +94,22 @@ function maxflow_hlpp(
     ## Allocate space for the flow we will calculate
     #F = SparseMatrixCSC{Tf, Ti}(n,n,Cundir.colptr,Cundir.rowval,zeros(Tf, length(Cundir.rowval)))
 
-    S, FlowMat, height, flowvalue = HLPP(C, flowtol)
+    hlpp_dt = @elapsed begin
+        S, FlowMat, height, flowvalue = HLPP(C, flowtol)
+    end
+    @show hlpp_dt
     inS = zeros(Bool, n)
     inS[S] .= true
     cutvalue = zero(Tf) 
+    I, J, V = findnz(C)
     for i = eachindex(I)
         if inS[I[i]] && !inS[J[i]]
             cutvalue += V[i]
         end
     end
     smap = sortperm(Map)
-    @show B[s, t]
     return stFlow{Tf, Ti}(flowvalue + B[s, t], cutvalue + B[s, t], sort(Map[S]),
-                          height, Cundir[smap, smap], FlowMat[smap, smap], s, t)
+                          height, C[smap, smap], FlowMat[smap, smap], s, t)
 end
 
 
@@ -128,9 +130,9 @@ function maxflow_hlpp(
     n = size(A, 1)
 
     # Directly set up the flow matrix
-    C = [spzeros(1,1) sparse(svec') spzeros(1,1);
-         spzeros(n, 1) A spzeros(n, 1);
-         spzeros(1,1) sparse(tvec') spzeros(1,1)]
+    C = [spzeros(Tf, 1,1) sparse(svec') spzeros(Tf, 1,1);
+         spzeros(Tf, n, 1) A sparse(tvec);
+         spzeros(Tf, 1,1) spzeros(Tf, 1, n) spzeros(Tf, 1,1)]
 
     return maxflow_hlpp(C, 1, n+2, flowtol)
 end
@@ -248,7 +250,7 @@ function HLPP(
         I, J, V = findnz(C)
         for k = eachindex(I)
             u = I[k]; v = J[k];
-            if u != v
+            if u != v # ignore self-loops
                 d[u] += 1 
                 d[v] += 1 
             end 
@@ -271,7 +273,7 @@ function HLPP(
         return m_starts, edges
     end
     # allocate space for reverse edges, assign the capacities of them as 0
-
+    m_starts, edges = ConstructAdjlist()
     # active nodes
     # for each level, use a cyclic linked list to store active nodes
     excess = zeros(Tf, n)
@@ -288,8 +290,6 @@ function HLPP(
         error("Type of Flow not supported")
     end
     infinite_height = Ti(round(typemax(Ti) / 2))
-
-    m_starts, edges = ConstructAdjlist()
 
     function excess_insert(v::Ti, h::Ti) 
         excess_next[v] = excess_next[n + 1 + h]
@@ -375,25 +375,27 @@ function HLPP(
         end
     end
 
-    function push(u::Ti, v::Ti, f::Tf)
+    function push(u::Ti, v::Ti, eid::Ti, f::Tf)
         excess_remove(u, f)
         excess_add(v, f)
-        F[u, v] += f
-        F[v, u] -= f 
+        edges[eid].flow += f
+        revid = edges[eid].rev
+        edges[revid].flow -= f 
     end
 
     # pointers for current arc heuristic
-    cur_arc = ones(Ti, n)
+    cur_arc = deepcopy(m_starts) 
 
     function discharge(u::Ti)
         h = n 
         pos = cur_arc[u] 
-        du = length(Neighbors[u])
-        while cur_arc[u] <= du 
-            v = Neighbors[u][cur_arc[u]]
-            if F[u, v] < C[u, v]
+        m_end = m_starts[u + 1] - 1
+        while cur_arc[u] <= m_end 
+            e = edges[cur_arc[u]]
+            v = e.to 
+            if e.flow < e.cap 
                 if height[u] == height[v] + 1
-                    push(u, v, min(excess[u], C[u, v] - F[u, v]))
+                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
                     if excess[u] <= 0
                         return
                     end
@@ -405,12 +407,13 @@ function HLPP(
             end
             cur_arc[u] += 1
         end
-        cur_arc[u] = 1
+        cur_arc[u] = m_starts[u] 
         while cur_arc[u] < pos
-            v = Neighbors[u][cur_arc[u]]          
-            if F[u, v] < C[u, v]
+            e = edges[cur_arc[u]]
+            v = e.to 
+            if e.flow < e.cap 
                 if height[u] == height[v] + 1
-                    push(u, v, min(excess[u], C[u, v] - F[u, v]))
+                    push(u, v, cur_arc[u], min(excess[u], e.cap - e.flow))
                     if excess[u] <= 0
                         return
                     end
@@ -449,7 +452,10 @@ function HLPP(
         println("")
     end
 
+
     global_relabel()
+
+    #print_key_variables()
     if height[1] < infinite_height
         excess_add(1, infinite_cap)
         excess_remove(n, infinite_cap)
@@ -478,6 +484,18 @@ function HLPP(
             push!(S, i)
         end
     end
+    I_F = Vector{Ti}()
+    J_F = Vector{Ti}()
+    V_F = Vector{Tf}()
+    for i = 1:n
+        for j = m_starts[i]:m_starts[i+1]-1
+            push!(I_F, i)
+            push!(J_F, edges[j].to)
+            push!(V_F, edges[j].flow)
+        end
+    end
+    F = sparse(I_F, J_F, V_F, n, n)
     return S, F, height, excess[n] + infinite_cap
 end
+
 
