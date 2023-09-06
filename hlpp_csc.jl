@@ -228,7 +228,14 @@ function ConstructAdj(C::SparseMatrixCSC)
     Neighbs = Vector{Vector{Int64}}()
     for i = 1:n
         # chop up the rp vector and put it in Neighbs
-        push!(Neighbs,rp[ci[i]:ci[i+1]-1])
+        uNeighb = Vector{Int64}()
+        for j = ci[i]:ci[i+1]-1
+            if rp[j] != i
+                push!(uNeighb,rp[j])
+            end
+        end
+        push!(Neighbs,uNeighb)
+        #push!(Neighbs,rp[ci[i]:ci[i+1]-1])
     end
 
     # d is the number of neighbors. This is the unweighted degree,
@@ -254,6 +261,7 @@ function HLPP(
 
     # active nodes
     # for each level, use a cyclic linked list to store active nodes
+    inexcess = zeros(Bool, n)
     excess = zeros(Tf, n)
     excess_next = zeros(Ti, n * 2 + 1)
     # maximum height of active nodes
@@ -272,6 +280,7 @@ function HLPP(
     function excess_insert(v::Ti, h::Ti) 
         excess_next[v] = excess_next[n + 1 + h]
         excess_next[n + 1 + h] = v
+        inexcess[v] = true
         if h > excess_height
             excess_height = h
         end
@@ -279,7 +288,7 @@ function HLPP(
 
     function excess_add(v::Ti, f::Tf)
         excess[v] += f
-        if excess[v] <= f + flowtol
+        if excess[v] <= f + flowtol && !inexcess[v]
             excess_insert(v, height[v])
         end
     end
@@ -316,7 +325,7 @@ function HLPP(
         height[v] = h
         if h != infinite_height 
             gap_insert(v, h)
-            if excess[v] > flowtol 
+            if excess[v] > flowtol && !inexcess[v]
                 excess_insert(v, h)
             end
         end
@@ -333,6 +342,9 @@ function HLPP(
             excess_next[i] = i
             gap_prev[i] = i
             gap_next[i] = i
+        end
+        for i = 1:n
+            inexcess[i] = false
         end
         fill!(height, infinite_height)
         height[n] = 0
@@ -439,10 +451,13 @@ function HLPP(
                     break
                 end
                 excess_next[n + 1 + excess_height] = excess_next[v]
+                inexcess[v] = false 
                 if height[v] != excess_height
                     continue
                 end
-                discharge(v)
+                if excess[v] > flowtol
+                    discharge(v)
+                end
                 if discharge_count >= 4 * n
                     global_relabel()
                 end
