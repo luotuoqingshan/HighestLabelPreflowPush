@@ -1,4 +1,4 @@
-using SparseArrays, LinearAlgebra
+using SparseArrays, LinearAlgebra, Printf
 
 function del_selfloops!(
     A::SparseMatrixCSC{Tf, Ti}
@@ -42,15 +42,67 @@ function read_flow_network(
 end
 
 include("hlpp.jl")
+include("hlpp_csc.jl")
 
 for dataset = ["blocked_zadeh_ex_negiizhao_1", "line_ex_negiizhao_1", 
     "zadeh_ex_negiizhao_1", "zadeh_ex_negiizhao_2", "zadeh_ex_negiizhao_3"] 
+    @printf("dataset: %s\n", dataset)
     B, s, t, stdans = read_flow_network("TestDataLOJ127/"*dataset, ".in", ".out")
     del_selfloops!(B)
     B = Float64.(B)
+    @show stdans
     hlpp_dt = @elapsed begin 
-        res = hlpp.maxflow(B, s, t)
-        @assert res.cutvalue == stdans
+        hlpp_res = hlpp.maxflow(B, s, t)
+        @show hlpp_res.cutvalue
+        @assert hlpp_res.cutvalue == stdans
     end
-    @show dataset, hlpp_dt
+    @show hlpp_dt
+    hlpp_csc_dt = @elapsed begin
+        hlpp_csc_res = hlpp_csc.maxflow(B, s, t)
+        @show hlpp_csc_res.cutvalue
+        @assert hlpp_csc_res.cutvalue == stdans
+    end
+    @show hlpp_csc_dt
+end
+
+
+for i = 1:36
+    @printf("dataset: %s\n", "680/data$i")
+    B, s, t, stdans = read_flow_network("680/"*"data$i", ".in", ".ans")
+    del_selfloops!(B)
+    B = Float64.(B)
+    @show stdans
+    hlpp_dt = @elapsed begin 
+        hlpp_res = hlpp.maxflow(B, s, t, 0.0)
+        @show hlpp_res.cutvalue
+        @assert hlpp_res.cutvalue == stdans
+    end
+    @show hlpp_dt
+    hlpp_csc_dt = @elapsed begin
+        hlpp_csc_res = hlpp_csc.maxflow(B, s, t, 0.0)
+        @show hlpp_csc_res.cutvalue
+        @assert hlpp_csc_res.cutvalue == stdans
+    end
+    @show hlpp_csc_dt
+end
+
+
+for i = 1:12
+    @printf("dataset: %s\n", "$i")
+    B, s, t, stdans = read_flow_network("$i", ".in", ".out")
+    del_selfloops!(B)
+    B = Float64.(B)
+    @show stdans
+    hlpp_dt = @elapsed begin 
+        hlpp_res = hlpp.maxflow(B, s, t, 0.0)
+        @show hlpp_res.cutvalue
+        @assert hlpp_res.cutvalue == stdans
+    end
+    @show hlpp_dt
+    hlpp_csc_dt = @elapsed begin
+        hlpp_csc_res = hlpp_csc.maxflow(B, s, t, 0.0)
+        @show hlpp_csc_res.cutvalue
+        @assert hlpp_csc_res.cutvalue == stdans
+    end
+    @show hlpp_csc_dt
 end
