@@ -279,7 +279,7 @@ function HLPP(
 
     function excess_add(v::Ti, f::Tf)
         excess[v] += f
-        if excess[v] <= f
+        if excess[v] <= f + flowtol
             excess_insert(v, height[v])
         end
     end
@@ -371,7 +371,7 @@ function HLPP(
             if C[u, v] - F[u, v] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, min(excess[u], C[u, v] - F[u, v]))
-                    if excess[u] <= 0
+                    if excess[u] <= flowtol 
                         return
                     end
                 else
@@ -388,7 +388,7 @@ function HLPP(
             if C[u, v] - F[u, v] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, min(excess[u], C[u, v] - F[u, v]))
-                    if excess[u] <= 0
+                    if excess[u] <= flowtol 
                         return
                     end
                 else

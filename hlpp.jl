@@ -25,16 +25,13 @@ a source node s, and a sink node t, return the maximum s-t flow.
 flowtol = tolerance parameter for whether there is still capacity available on
             an edge. Helps avoid rounding errors. Default is 1e-6.
 
-details = whether to return the capacity and flow matrix. Default is false.
-
 Returns F, which is of type stFlow.
 """
 function maxflow(
     B::SparseMatrixCSC{Tf, Ti},
     s::Ti,
     t::Ti,
-    flowtol=nothing,
-    details=false, # whether to return the capacity and flow matrix
+    flowtol=nothing;
 ) where {Ti <: Integer, Tf}
     # Set the default value of flowtol
     if flowtol === nothing
@@ -93,7 +90,7 @@ function maxflow(
          spzeros(Tf, n - 2, 1) A B[NonTerminal, t];
          spzeros(Tf, 1, 1) spzeros(Tf, 1, n - 2) spzeros(Tf, 1, 1)]
 
-    S, FlowMat, height, flowvalue = HLPP(C, flowtol, details)
+    S, FlowMat, height, flowvalue = HLPP(C, flowtol)
     inS = zeros(Bool, n)
     inS[S] .= true
     cutvalue = zero(Tf) 
@@ -120,8 +117,7 @@ function maxflow(
     A::SparseMatrixCSC{Tf, Ti},
     svec::Vector{Tf},
     tvec::Vector{Tf},
-    flowtol=nothing,
-    details=false,
+    flowtol=nothing;
 ) where {Ti <: Integer, Tf}
 
     n = size(A, 1)
@@ -131,7 +127,7 @@ function maxflow(
          spzeros(Tf, n, 1) A sparse(tvec);
          spzeros(Tf, 1,1) spzeros(Tf, 1, n) spzeros(Tf, 1,1)]
 
-    return maxflow(C, 1, n+2, flowtol, storeflow)
+    return maxflow(C, 1, n+2, flowtol)
 end
 
 
@@ -225,8 +221,7 @@ Main function for Highest Label Preflow Push Method
 """
 function HLPP(
     C::SparseMatrixCSC{Tf, Ti},
-    flowtol::Tf,
-    details::Bool=false,
+    flowtol::Tf;
 ) where {Ti <: Integer, Tf}
     n = size(C, 1) # number of vertices in the graph
     m = nnz(C)
@@ -311,7 +306,8 @@ function HLPP(
 
     function excess_add(v::Ti, f::Tf)
         excess[v] += f
-        if excess[v] <= f
+        # excess[v] <= flowtol means v is not active
+        if excess[v] <= f + flowtol
             excess_insert(v, height[v])
         end
     end
@@ -350,10 +346,14 @@ function HLPP(
 
     
     function update_height(v::Ti, h::Ti)
+        # if original height is not infinite, then we can 
+        # erase it from the cyclic linked list
         if height[v] != infinite_height 
             gap_erase(v)
         end
         height[v] = h
+        # if the new height is not infinite, then we can
+        # insert it into the cyclic linked list
         if h != infinite_height 
             gap_insert(v, h)
             if excess[v] > flowtol 
@@ -386,6 +386,8 @@ function HLPP(
             for i in m_starts[u]:m_starts[u + 1] - 1 
                 v = to[i]
                 rev_edge = rev[i] 
+                # if v has an edge to u with positive residual capacity
+                # then we update the height of v and add it to the queue
                 if rescap[rev_edge] > flowtol && height[v] > height[u] + 1 
                     update_height(v, height[u] + 1)
                     tail += 1
@@ -412,13 +414,19 @@ function HLPP(
         while cur_arc[u] <= m_end 
             e = cur_arc[u]
             v = to[e] 
+            # if edge uv has positive residual capacity
             if rescap[e] > flowtol 
+                # if height[u] == height[v] + 1,
+                # it means we can push flow through this edge
                 if height[u] == height[v] + 1
                     push(u, v, cur_arc[u], min(excess[u], rescap[e]))
-                    if excess[u] <= 0
+                    # once excess[u] becomes close to zero(under flowtol), 
+                    # we treat it as inactive
+                    if excess[u] <= flowtol 
                         return
                     end
                 else
+                    # we keep track of the new height of u
                     if height[v] < h 
                         h = height[v]
                     end
@@ -427,13 +435,14 @@ function HLPP(
             cur_arc[u] += 1
         end
         cur_arc[u] = m_starts[u] 
+        # perform the similar stuff with the previous loop
         while cur_arc[u] < pos
             e = cur_arc[u]
             v = to[e] 
             if rescap[e] > flowtol 
                 if height[u] == height[v] + 1
                     push(u, v, cur_arc[u], min(excess[u], rescap[e]))
-                    if excess[u] <= 0
+                    if excess[u] <= flowtol 
                         return
                     end
                 else
@@ -445,6 +454,8 @@ function HLPP(
             cur_arc[u] += 1
         end
         discharge_count += 1
+        # if there are still vertices on this level, then we directly update the height
+        # note this only happens when u is still active(excess[u] > 0)
         if gap_next[gap_next[n + 1 + height[u]]] <= n
             update_height(u, h == n ? infinite_height : h + 1)
         else
@@ -514,21 +525,18 @@ function HLPP(
             push!(S, i)
         end
     end
-    if details
-        I_F = Vector{Ti}()
-        J_F = Vector{Ti}()
-        V_F = Vector{Tf}()
-        for i = 1:n
-            for j = m_starts[i]:m_starts[i+1]-1
-                push!(I_F, i)
-                push!(J_F, to[j])
-                push!(V_F, C[i, to[j]] - rescap[j])
-            end
+    I_resC = Vector{Ti}()
+    J_resC = Vector{Ti}()
+    V_resC = Vector{Tf}()
+    for i = 1:n
+        for j = m_starts[i]:m_starts[i+1]-1
+            push!(I_resC, i)
+            push!(J_resC, to[j])
+            push!(V_resC, rescap[j])
         end
-        F = sparse(I_F, J_F, V_F, n, n)
-    else
-        F = spzeros(Tf, n, n)
     end
+    resC = sparse(I_resC, J_resC, V_resC, n, n)
+    F = C .- resC
     return S, F, height, excess[n] + infinite_cap
 end
 
